@@ -26,6 +26,12 @@
 #ifndef _IOKIT_SCSI_CMDS_INQUIRY_H_
 #define _IOKIT_SCSI_CMDS_INQUIRY_H_
 
+#if KERNEL
+#include <IOKit/IOTypes.h>
+#else
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+
 // This file contains all the definitions for the data returned from
 // the INQUIRY (0x12) command.
 
@@ -60,7 +66,7 @@ struct SCSICmd_INQUIRY_StandardData
 	UInt8		flags1;								// First byte of support flags
 	UInt8		flags2;								// Second byte of support flags (Byte 7)
 	char		VENDOR_IDENTIFICATION[kINQUIRY_VENDOR_IDENTIFICATION_Length];
-	char		PRODUCT_INDENTIFICATION[kINQUIRY_PRODUCT_IDENTIFICATION_Length];
+	char		PRODUCT_IDENTIFICATION[kINQUIRY_PRODUCT_IDENTIFICATION_Length];
 	char		PRODUCT_REVISION_LEVEL[kINQUIRY_PRODUCT_REVISION_LEVEL_Length];
 };
 typedef struct SCSICmd_INQUIRY_StandardData SCSICmd_INQUIRY_StandardData;
@@ -82,7 +88,7 @@ struct SCSICmd_INQUIRY_StandardDataAll
 	UInt8		flags1;								// First byte of support flags (Byte 6)
 	UInt8		flags2;								// Second byte of support flags (Byte 7)
 	char		VENDOR_IDENTIFICATION[kINQUIRY_VENDOR_IDENTIFICATION_Length];
-	char		PRODUCT_INDENTIFICATION[kINQUIRY_PRODUCT_IDENTIFICATION_Length];
+	char		PRODUCT_IDENTIFICATION[kINQUIRY_PRODUCT_IDENTIFICATION_Length];
 	char		PRODUCT_REVISION_LEVEL[kINQUIRY_PRODUCT_REVISION_LEVEL_Length];
 	
 	// Following is the optional data that may be returned by a device.

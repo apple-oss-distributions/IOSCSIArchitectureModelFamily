@@ -32,6 +32,9 @@
 #include "SCSITaskUserClient.h"
 #include "SCSITaskLib.h"
 
+// Libkern includes
+#include <libkern/OSAtomic.h>
+
 // IOKit includes
 #include <IOKit/IOCommandGate.h>
 #include <IOKit/IOWorkLoop.h>
@@ -40,11 +43,11 @@
 #include <IOKit/storage/IOBlockStorageDriver.h>
 
 // SCSI Architecture Model Family includes
-#include <IOKit/scsi-commands/IOSCSIPrimaryCommandsDevice.h>
-#include <IOKit/scsi-commands/IOSCSIMultimediaCommandsDevice.h>
-#include <IOKit/scsi-commands/SCSICmds_REQUEST_SENSE_Defs.h>
-#include <IOKit/scsi-commands/SCSICmds_INQUIRY_Definitions.h>
-#include <IOKit/scsi-commands/SCSICommandOperationCodes.h>
+#include <IOKit/scsi/IOSCSIPrimaryCommandsDevice.h>
+#include <IOKit/scsi/IOSCSIMultimediaCommandsDevice.h>
+#include <IOKit/scsi/SCSICmds_REQUEST_SENSE_Defs.h>
+#include <IOKit/scsi/SCSICmds_INQUIRY_Definitions.h>
+#include <IOKit/scsi/SCSICommandOperationCodes.h>
 
 
 //ÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑ
@@ -256,6 +259,22 @@ SCSITaskUserClient::sMethods[kSCSITaskUserClientMethodCount] =
 		kIOUCStructIStructO,
 		sizeof ( AppleReadDVDStructureStruct ),
 		sizeof ( SCSITaskStatus )
+	},
+	{
+		// Method #20 SetCDSpeed
+		0,
+		( IOMethod ) &SCSITaskUserClient::SetCDSpeed,
+		kIOUCStructIStructO,
+		sizeof ( AppleSetCDSpeedStruct ),
+		sizeof ( SCSITaskStatus )
+	},
+	{
+		// Method #21 ReadFormatCapacities
+		0,
+		( IOMethod ) &SCSITaskUserClient::ReadFormatCapacities,
+		kIOUCStructIStructO,
+		sizeof ( AppleReadFormatCapacitiesStruct ),
+		sizeof ( SCSITaskStatus )
 	}
 };
 
@@ -454,46 +473,6 @@ SCSITaskUserClient::free ( void )
 	}
 	
 	super::free ( );
-	
-}
-
-
-//ÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑ
-//	¥ message - Handles termination messages.						[PUBLIC]
-//ÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑ
-
-IOReturn
-SCSITaskUserClient::message ( UInt32 type, IOService * provider, void * arg )
-{
-	
-	IOReturn	status = kIOReturnSuccess;
-	
-	STATUS_LOG ( ( "%s::%s type = %ld, provider = %p\n",
-				 getName ( ), __FUNCTION__, type, provider ) );
-	
-	switch ( type )
-	{
-		
-		case kIOMessageServiceIsTerminated:
-		{	
-			
-			STATUS_LOG ( ( "kIOMessageServiceIsTerminated called\n" ) );
-			status = HandleTerminate ( provider );
-			
-		}
-		break;
-		
-		default:
-		{
-			
-			status = super::message ( type, provider, arg );
-			
-		}
-		break;
-		
-	}
-	
-	return status;
 	
 }
 
@@ -730,8 +709,6 @@ SCSITaskUserClient::ReleaseTask ( SInt32 taskReference )
 	SCSITaskRefCon *		refCon	= NULL;
 	
 	STATUS_LOG ( ( "SCSITaskUserClient::ReleaseTask\n" ) );
-
-	require_action ( isInactive ( ) == false, GENERAL_ERR, status = kIOReturnNoDevice );
 	
 	require ( ( taskReference >= 0 ) && ( taskReference < kMaxSCSITaskArraySize ),
 			  GENERAL_ERR );
@@ -889,7 +866,7 @@ SCSITaskUserClient::ExecuteTask ( SCSITaskData * args, UInt32 argSize )
 			
 			// Make sure to complete any data buffers from client
 			status = CompleteBuffers ( buffer );
-		
+			
 		}
 		
 		release ( );
@@ -1147,6 +1124,10 @@ SCSITaskUserClient::Inquiry ( AppleInquiryStruct * 	inquiryData,
 	
 	*outStructSize = sizeof ( SCSITaskStatus );
 	
+	task->release ( );
+	
+	return status;
+	
 	
 BUFFER_PREPARATION_ERR:
 	
@@ -1212,6 +1193,8 @@ SCSITaskUserClient::TestUnitReady ( vm_address_t 		senseDataBuffer,
 	task->release ( );
 	*outStructSize = sizeof ( SCSITaskStatus );
 	
+	return status;
+	
 	
 TASK_SETUP_ERR:
 EXCLUSIVE_ACCESS_ERR:
@@ -1274,7 +1257,7 @@ SCSITaskUserClient::GetPerformance ( AppleGetPerformanceStruct * 	performanceDat
 									  0x00,
 									  ( performanceData->MAXIMUM_NUMBER_OF_DESCRIPTORS >> 8 )	& 0xFF,
 									    performanceData->MAXIMUM_NUMBER_OF_DESCRIPTORS			& 0xFF,
-									  0x00,
+									  performanceData->TYPE,
 									  0x00 );
 	
 	task->SetTimeoutDuration ( kThirtySecondTimeoutInMS );
@@ -1291,6 +1274,10 @@ SCSITaskUserClient::GetPerformance ( AppleGetPerformanceStruct * 	performanceDat
 	}
 	
 	*outStructSize = sizeof ( SCSITaskStatus );
+	
+	task->release ( );
+	
+	return status;
 	
 	
 BUFFER_PREPARATION_ERR:
@@ -1376,6 +1363,10 @@ SCSITaskUserClient::GetConfiguration ( AppleGetConfigurationStruct * 	configData
 	
 	*outStructSize = sizeof ( SCSITaskStatus );
 	
+	task->release ( );
+	
+	return status;
+	
 	
 BUFFER_PREPARATION_ERR:
 	
@@ -1459,6 +1450,10 @@ SCSITaskUserClient::ModeSense10 ( AppleModeSense10Struct * 	modeSenseData,
 	}
 	
 	*outStructSize = sizeof ( SCSITaskStatus );
+	
+	task->release ( );
+	
+	return status;
 	
 	
 BUFFER_PREPARATION_ERR:
@@ -1545,6 +1540,10 @@ SCSITaskUserClient::SetWriteParametersModePage ( AppleWriteParametersModePageStr
 	}
 	
 	*outStructSize = sizeof ( SCSITaskStatus );
+	
+	task->release ( );
+	
+	return status;
 	
 	
 BUFFER_PREPARATION_ERR:
@@ -1724,6 +1723,10 @@ SCSITaskUserClient::ReadTableOfContents ( AppleReadTableOfContentsStruct * 	read
 	
 	*outStructSize = sizeof ( SCSITaskStatus );
 	
+	task->release ( );
+	
+	return status;
+	
 	
 BUFFER_PREPARATION_ERR:
 	
@@ -1807,6 +1810,10 @@ SCSITaskUserClient::ReadDiscInformation ( AppleReadDiscInfoStruct * 	discInfoDat
 	
 	*outStructSize = sizeof ( SCSITaskStatus );
 	
+	task->release ( );
+	
+	return status;
+	
 	
 BUFFER_PREPARATION_ERR:
 	
@@ -1889,6 +1896,10 @@ SCSITaskUserClient::ReadTrackInformation ( AppleReadTrackInfoStruct * 	trackInfo
 	}
 	
 	*outStructSize = sizeof ( SCSITaskStatus );
+	
+	task->release ( );
+	
+	return status;
 	
 	
 BUFFER_PREPARATION_ERR:
@@ -1975,6 +1986,10 @@ SCSITaskUserClient::ReadDVDStructure ( AppleReadDVDStructureStruct * 	dvdStructD
 	
 	*outStructSize = sizeof ( SCSITaskStatus );
 	
+	task->release ( );
+	
+	return status;
+	
 	
 BUFFER_PREPARATION_ERR:
 	
@@ -1986,6 +2001,169 @@ TASK_SETUP_ERR:
 EXCLUSIVE_ACCESS_ERR:
 GENERAL_ERR:
 	
+	
+	fOutstandingCommands--;
+	
+	return status;
+	
+}
+
+
+//ÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑ
+//	¥ SetCDSpeed - Called to set the new CD read/write speeds.
+//																	[PUBLIC]
+//ÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑ
+
+IOReturn
+SCSITaskUserClient::SetCDSpeed ( AppleSetCDSpeedStruct *	setCDSpeedData,
+								 SCSITaskStatus * 			taskStatus,
+								 UInt32 					inStructSize,
+								 UInt32 * 					outStructSize )
+{
+	
+	IOReturn				status			= kIOReturnExclusiveAccess;
+	SCSITask * 				task			= NULL;
+	bool					state			= true;
+	UInt16					readSpeed		= 0;
+	UInt16					writeSpeed		= 0;
+	
+	
+	check ( setCDSpeedData );
+	check ( taskStatus );
+	check ( outStructSize );
+	
+	fOutstandingCommands++;
+	
+	require_action ( isInactive ( ) == false, GENERAL_ERR, status = kIOReturnNoDevice );
+	
+	state = fProtocolInterface->GetUserClientExclusivityState ( );
+	nrequire ( state, EXCLUSIVE_ACCESS_ERR );
+	
+	// Create and initialize a task
+	status = SetupTask ( &task );
+	require_success ( status, TASK_SETUP_ERR );
+	
+	readSpeed	= setCDSpeedData->LOGICAL_UNIT_READ_SPEED;
+	writeSpeed	= setCDSpeedData->LOGICAL_UNIT_WRITE_SPEED;
+	
+	task->SetCommandDescriptorBlock ( kSCSICmd_SET_CD_SPEED,
+									  0x00,
+									  ( readSpeed >>   8 )	& 0xFF,
+									  readSpeed				& 0xFF,
+									  ( writeSpeed >>  8 )	& 0xFF,
+									  writeSpeed			& 0xFF,
+									  0x00,
+									  0x00,
+									  0x00,
+									  0x00,
+									  0x00,
+									  0x00 );
+	
+	task->SetTimeoutDuration ( kThirtySecondTimeoutInMS );
+	task->SetDataTransferDirection ( kSCSIDataTransfer_NoDataTransfer );
+	
+	status	= SendCommand ( task,
+							setCDSpeedData->senseDataBuffer,
+							taskStatus );
+	
+	*outStructSize = sizeof ( SCSITaskStatus );
+	
+	task->release ( );
+	
+	return status;
+	
+	
+TASK_SETUP_ERR:
+EXCLUSIVE_ACCESS_ERR:
+GENERAL_ERR:
+	
+	
+	fOutstandingCommands--;
+	
+	return status;
+	
+}
+
+
+//ÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑ
+//	¥ ReadFormatCapacities - Issues a READ_FORMAT_CAPACITIES command to the
+//							 drive as defined in MMC-2.				[PUBLIC]
+//ÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑ
+
+IOReturn
+SCSITaskUserClient::ReadFormatCapacities ( AppleReadFormatCapacitiesStruct *	readFormatCapacitiesData,
+										   SCSITaskStatus * 					taskStatus,
+										   UInt32 								inStructSize,
+										   UInt32 * 							outStructSize )
+{
+	
+	IOReturn				status			= kIOReturnExclusiveAccess;
+	IOReturn				status2			= kIOReturnExclusiveAccess;
+	bool					state			= true;
+	SCSITask * 				task			= NULL;
+	IOMemoryDescriptor *	buffer			= NULL;
+	
+	
+	check ( readFormatCapacitiesData );
+	check ( taskStatus );
+	check ( outStructSize );
+	
+	fOutstandingCommands++;
+	
+	require_action ( isInactive ( ) == false, GENERAL_ERR, status = kIOReturnNoDevice );
+	
+	state = fProtocolInterface->GetUserClientExclusivityState ( );
+	nrequire ( state, EXCLUSIVE_ACCESS_ERR );
+	
+	// Create and initialize a task
+	status = SetupTask ( &task );
+	require_success ( status, TASK_SETUP_ERR );
+	
+	// Prepare the buffers
+	status = PrepareBuffers ( &buffer, readFormatCapacitiesData->buffer, readFormatCapacitiesData->bufferSize, kIODirectionIn );
+	require_success ( status, BUFFER_PREPARATION_ERR );
+	
+	task->SetCommandDescriptorBlock ( kSCSICmd_READ_FORMAT_CAPACITIES,
+									  0x00,
+									  0x00,
+									  0x00,
+									  0x00,
+									  0x00,
+									  0x00,
+									  ( readFormatCapacitiesData->bufferSize >> 8 ) & 0xFF,
+									    readFormatCapacitiesData->bufferSize        & 0xFF,
+									  0 );
+	
+	task->SetTimeoutDuration ( kThirtySecondTimeoutInMS );
+	task->SetDataTransferDirection ( kSCSIDataTransfer_FromTargetToInitiator );
+	task->SetDataBuffer ( buffer );
+	task->SetRequestedDataTransferCount ( readFormatCapacitiesData->bufferSize );
+	
+	status	= SendCommand ( task, readFormatCapacitiesData->senseDataBuffer, taskStatus );
+	
+	status2	= CompleteBuffers ( buffer );
+	
+	if ( ( status == kIOReturnSuccess ) && ( status2 != kIOReturnSuccess ) )
+	{
+		status = status2;
+	}
+	
+	*outStructSize = sizeof ( SCSITaskStatus );
+	
+	task->release ( );
+	
+	return status;
+	
+	
+BUFFER_PREPARATION_ERR:
+	
+	
+	task->release ( );
+	
+	
+TASK_SETUP_ERR:
+EXCLUSIVE_ACCESS_ERR:
+GENERAL_ERR:
 	
 	fOutstandingCommands--;
 	
@@ -2020,7 +2198,7 @@ SCSITaskUserClient::getTargetAndMethodForIndex (
 	
 	fOutstandingCommands++;
 	
-	require ( isInactive ( ) == false, GENERAL_ERR );
+	require ( isInactive ( ) == false, DECREMENT_COUNTER );
 	
 	fProtocolInterface->retain ( );
 	
@@ -2035,10 +2213,14 @@ SCSITaskUserClient::getTargetAndMethodForIndex (
 	method 	= &sMethods[index];
 	
 	
-GENERAL_ERR:
+DECREMENT_COUNTER:
 	
 	
 	fOutstandingCommands--;
+	
+	
+GENERAL_ERR:
+	
 	
 	return method;
 	
@@ -2066,7 +2248,7 @@ SCSITaskUserClient::getAsyncTargetAndMethodForIndex (
 	
 	fOutstandingCommands++;
 	
-	require ( isInactive ( ) == false, GENERAL_ERR );
+	require ( isInactive ( ) == false, DECREMENT_COUNTER );
 	
 	fProtocolInterface->retain ( );
 	
@@ -2081,10 +2263,14 @@ SCSITaskUserClient::getAsyncTargetAndMethodForIndex (
 	method 	= &sAsyncMethods[index];
 	
 	
-GENERAL_ERR:
+DECREMENT_COUNTER:
 	
 	
 	fOutstandingCommands--;
+	
+	
+GENERAL_ERR:
+	
 	
 	return method;
 	
@@ -2367,6 +2553,27 @@ SCSITaskUserClient::GatedWaitForTask ( SCSITask * request )
 
 
 //ÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑ
+//	¥ didTerminate - Checks to see if termination should be deferred.
+//																	[PROTECTED]
+//ÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑ
+
+bool
+SCSITaskUserClient::didTerminate ( IOService * 		provider,
+								   IOOptionBits		options,
+								   bool *			defer )
+{
+	
+	if ( fOutstandingCommands == 0 )
+	{
+		HandleTerminate ( provider );
+	}
+	
+	return true;
+	
+}
+
+
+//ÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑ
 //	¥ HandleTerminate -	Handles terminating our object and any resources it
 //						allocated.									[PROTECTED]
 //ÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑ
@@ -2375,17 +2582,9 @@ IOReturn
 SCSITaskUserClient::HandleTerminate ( IOService * provider )
 {
 	
-	IOReturn		status 		= kIOReturnSuccess;
-	IOWorkLoop *	workLoop	= NULL;
+	IOReturn	status = kIOReturnSuccess;
 	
 	check ( provider );
-	
-	// Wait for any outstanding I/O to finish. No new I/O can occur since we
-	// are marked as terminated.
-	while ( fOutstandingCommands != 0 )
-	{
-		IOSleep ( 10 );
-	}
 	
 	// Check if we have our provider open.
 	if ( provider->isOpen ( this ) )
@@ -2396,11 +2595,6 @@ SCSITaskUserClient::HandleTerminate ( IOService * provider )
 		provider->close ( this, kIOSCSITaskUserClientAccessMask );
 		
 	}
-	
-	// Get the workloop before calling detach(), otherwise it won't work
-	// (it traverses the IORegistry and detach() removes us from the IORegistry).
-	workLoop = getWorkLoop ( );
-	check ( workLoop );
 	
 	// Decouple us from the IORegistry.
 	detach ( provider );
@@ -2482,7 +2676,11 @@ SCSITaskUserClient::SendCommand ( SCSITask * 		request,
 							  ( void * ) request );
 	
 	*taskStatus = request->GetTaskStatus ( );
-	status = kIOReturnSuccess;
+	
+	if ( request->GetServiceResponse ( ) == kSCSIServiceResponse_TASK_COMPLETE )
+		status = kIOReturnSuccess;
+	else
+		status = kIOReturnIOError;
 	
 	
 ErrorExit:
@@ -2544,6 +2742,7 @@ SCSITaskUserClient::TaskCallback ( SCSITask * task, SCSITaskRefCon * refCon )
 	if ( refCon->commandType == kCommandTypeNonExclusive )
 	{
 		
+		fOutstandingCommands--;
 		fCommandGate->commandWakeup ( &refCon->commandType );
 		
 	}
@@ -2562,7 +2761,7 @@ SCSITaskUserClient::TaskCallback ( SCSITask * task, SCSITaskRefCon * refCon )
 		
 		OSAsyncReference	asyncRef;
 		
-		asyncRef = refCon->asyncReference;
+		bcopy ( refCon->asyncReference, asyncRef, sizeof ( OSAsyncReference ) );
 		
 		STATUS_LOG ( ( "asyncRef[0] = %d\n", asyncRef[0] ) );
 		
@@ -2583,6 +2782,9 @@ SCSITaskUserClient::TaskCallback ( SCSITask * task, SCSITaskRefCon * refCon )
 		
 	}
 	
+	if ( isInactive ( ) && ( fOutstandingCommands == 0 ) )
+		HandleTerminate ( fProvider );
+	
 }
 
 
@@ -2599,11 +2801,13 @@ SCSITaskUserClient::SetupTask ( SCSITask ** task )
 	
 	check ( task );
 	
-	newTask = new SCSITask;
+	newTask = OSTypeAlloc ( SCSITask );
 	require_nonzero ( newTask, TASK_CREATE_ERR );
 	require_action ( newTask->ResetForNewTask ( ),
 					 TASK_CREATE_ERR,
 					 newTask->release ( ) );
+	
+	newTask->SetTaskOwner ( this );
 	
 	*task 	= newTask;
 	status	= kIOReturnSuccess;
