@@ -243,7 +243,7 @@ IODVDServices::message ( UInt32 		type,
 		{
 
 			ERROR_LOG ( ( "type = kIOMessageMediaStateHasChanged, nub = %p\n", nub ) );
-			status = messageClients ( type, arg, sizeof ( IOMediaState ) );
+			status = messageClients ( type, arg );
 			ERROR_LOG ( ( "status = %ld\n", ( UInt32 ) status ) );
 		
 		}
@@ -271,9 +271,10 @@ IOReturn
 IODVDServices::setProperties ( OSObject * properties )
 {
 	
-	IOReturn		status 		= kIOReturnSuccess;
-	OSDictionary *	dict 		= OSDynamicCast ( OSDictionary, properties );
-	UInt8			trayState	= 0xFF;
+	IOReturn		status 				= kIOReturnSuccess;
+	OSDictionary *	dict 				= OSDynamicCast ( OSDictionary, properties );
+	UInt8			trayState			= 0xFF;
+	Boolean			userClientActive	= false;
 	
 	STATUS_LOG ( ( "IODVDServices: setProperties called\n" ) );
 	
@@ -285,26 +286,45 @@ IODVDServices::setProperties ( OSObject * properties )
 	if ( dict->getObject ( "TrayState" ) != NULL )
 	{
 		
-		STATUS_LOG ( ( "IODVDServices: setProperties TrayState\n" ) );
-		status = fProvider->GetTrayState ( &trayState );
+		userClientActive = fProvider->GetUserClientExclusivityState ( );
+		if ( userClientActive == false )
+		{
 		
-		STATUS_LOG ( ( "GetTrayState returned status = 0x%08x, trayState = %d\n",
-						status, trayState ) );
+			fProvider->CheckPowerState ( );
+			
+			STATUS_LOG ( ( "IODVDServices: setProperties TrayState\n" ) );
+			status = fProvider->GetTrayState ( &trayState );
+			
+			STATUS_LOG ( ( "GetTrayState returned status = 0x%08x, trayState = %d\n",
+							status, trayState ) );
+			
+			if ( status == kIOReturnSuccess )
+			{
+				
+				status = fProvider->SetTrayState ( !trayState );
+				STATUS_LOG ( ( "SetTrayState returned status = 0x%08x\n",
+							status ) );
+				
+			}
 		
-		if ( status == kIOReturnSuccess )
+		}
+		
+		else
 		{
 			
-			status = fProvider->SetTrayState ( !trayState );
-			STATUS_LOG ( ( "SetTrayState returned status = 0x%08x\n",
-						status ) );
-						
+			// The user client is active, reject this call.
+			status = kIOReturnExclusiveAccess;
+			
 		}
 		
 	}
 	
 	else
 	{
+		
+		// Wasn't a "TrayState" call...
 		status = kIOReturnBadArgument;
+		
 	}
 	
 	STATUS_LOG ( ( "IODVDServices: leave setProperties\n" ) );
@@ -335,19 +355,22 @@ IODVDServices::AsyncReadWriteComplete ( void * 			clientData,
 	returnData 	= bsClientData->completionData;
 	owner 		= bsClientData->owner;
 	
-	if ((( status != kIOReturnNotAttached ) && ( status != kIOReturnOffline ) &&
-		( status != kIOReturnSuccess )) && ( bsClientData->retriesLeft > 0 ))
+	if ( ( ( status != kIOReturnNotAttached ) && ( status != kIOReturnOffline ) &&
+		 ( status != kIOReturnUnsupportedMode ) && ( status != kIOReturnSuccess ) ) &&
+		 ( bsClientData->retriesLeft > 0 ) )
 	{
+		
 		IOReturn 	requestStatus;
-
-		STATUS_LOG(("IODVDServices: AsyncReadWriteComplete; retry command\n"));
+		
+		STATUS_LOG ( ( "IODVDServices: AsyncReadWriteComplete; retry command\n" ) );
 		// An error occurred, but it is one on which the command should be retried.  Decrement
 		// the retry counter and try again.
 		bsClientData->retriesLeft--;
 		if ( bsClientData->clientReadCDCall == true )
 		{
+		
 #if (_DVD_USE_DATA_CACHING_)
-			requestStatus = owner->fProvider->AsyncReadCD( 
+			requestStatus = owner->fProvider->AsyncReadCD (
 											bsClientData->transferSegDesc,
 											bsClientData->transferStart,
 											bsClientData->transferCount,
@@ -355,7 +378,7 @@ IODVDServices::AsyncReadWriteComplete ( void * 			clientData,
 											bsClientData->clientSectorType,
 											clientData );
 #else
-			requestStatus = owner->fProvider->AsyncReadCD( 
+			requestStatus = owner->fProvider->AsyncReadCD (
 											bsClientData->clientBuffer, 
 											bsClientData->clientStartingBlock, 
 											bsClientData->clientRequestedBlockCount, 
@@ -363,28 +386,35 @@ IODVDServices::AsyncReadWriteComplete ( void * 			clientData,
 											bsClientData->clientSectorType,
 											clientData );
 #endif
+		
 		}
+		
 		else
 		{
-			requestStatus = owner->fProvider->AsyncReadWrite( 
+			
+			requestStatus = owner->fProvider->AsyncReadWrite (
 											bsClientData->clientBuffer, 
 											bsClientData->clientStartingBlock, 
 											bsClientData->clientRequestedBlockCount, 
 											clientData );
+			
 		}
-
+		
 		if ( requestStatus != kIOReturnSuccess )
 		{
 			commandComplete = true;
 		}
+		
 		else
 		{
 			commandComplete = false;
 		}
+	
 	}
 
 	if ( commandComplete == true )
 	{		
+
 #if (_DVD_USE_DATA_CACHING_)
 		// Check to see if there was a temporary transfer buffer
 		if ( bsClientData->transferSegBuffer != NULL )
@@ -406,20 +436,20 @@ IODVDServices::AsyncReadWriteComplete ( void * 			clientData,
 			}
 			
 			( bsClientData->transferSegDesc )->release ( );
-
+			
 			// Since the buffer is the entire size of the client's requested transfer ( not just the amount transferred), 
 			// make sure to release the whole allocation.
 			IOFree ( bsClientData->transferSegBuffer, ( bsClientData->clientRequestedBlockCount * _CACHE_BLOCK_SIZE_ ) );
 			
 		}
-
+		
 		// Make sure that the transfer completed successfully.
 		if ( status == kIOReturnSuccess )
 		{
-		
+			
 			// Check to see if this was a Read CD call for a CDDA sector and if so,
 			// store cache data.
-			if (( bsClientData->clientReadCDCall == true ) && ( bsClientData->clientSectorType == kCDSectorTypeCDDA ))
+			if ( ( bsClientData->clientReadCDCall == true ) && ( bsClientData->clientSectorType == kCDSectorTypeCDDA ) )
 			{
 				
 				// Save the last blocks into the data cache
@@ -431,12 +461,12 @@ IODVDServices::AsyncReadWriteComplete ( void * 			clientData,
 				{
 					
 					UInt32	offset;
-						
+					
 					// Calculate the beginning of data to copy into cache.
 					offset = ( ( bsClientData->clientRequestedBlockCount - _CACHE_BLOCK_COUNT_ ) * _CACHE_BLOCK_SIZE_ );
-					( bsClientData->clientBuffer )->readBytes ( offset, owner->fDataCacheStorage, 
+					( bsClientData->clientBuffer )->readBytes ( offset, owner->fDataCacheStorage,
 								( _CACHE_BLOCK_COUNT_ * _CACHE_BLOCK_SIZE_ ) );
-								
+					
 					owner->fDataCacheStartBlock = bsClientData->clientStartingBlock + ( bsClientData->clientRequestedBlockCount - _CACHE_BLOCK_COUNT_ );
 					owner->fDataCacheBlockCount = _CACHE_BLOCK_COUNT_;
 					
@@ -445,17 +475,20 @@ IODVDServices::AsyncReadWriteComplete ( void * 			clientData,
 				IOSimpleLockUnlock ( owner->fDataCacheLock );
 				
 			}
+		
 		}
 #endif
 		
 		IOFree ( clientData, sizeof ( BlockServicesClientData ) );
-
+		
 		// Release the retain for this command.	
 		owner->fProvider->release ( );
 		owner->release ( );
 		
 		IOStorage::complete ( returnData, status, actualByteCount );
+	
 	}
+	
 }
 
 
@@ -562,6 +595,7 @@ IODVDServices::doAsyncReadCD ( 	IOMemoryDescriptor *	buffer,
 		clientData->transferSegBuffer = ( UInt8 * ) IOMalloc ( nblks * _CACHE_BLOCK_SIZE_ );
 		if ( clientData->transferSegBuffer != NULL )
 		{
+			
 			IOSimpleLockLock ( fDataCacheLock );
 
 			// Determine what data can be used from the cache
@@ -1072,6 +1106,73 @@ IODVDServices::readTOC ( IOMemoryDescriptor * buffer )
 }
 
 //---------------------------------------------------------------------------
+// readTOC
+
+IOReturn
+IODVDServices::readTOC ( IOMemoryDescriptor * 		buffer,
+						 CDTOCFormat				format,
+						 UInt8						msf,
+						 UInt8						trackSessionNumber,
+						 UInt16 *					actualByteCount )
+{
+	
+	// Return errors for incoming activity if we have been terminated
+	if ( isInactive ( ) != false )
+	{
+		return kIOReturnNotAttached;
+	}
+	
+	fProvider->CheckPowerState ( );	
+	
+	return fProvider->ReadTOC ( buffer, format, msf, trackSessionNumber, actualByteCount );
+	
+}
+
+//---------------------------------------------------------------------------
+// readDiscInfo
+
+IOReturn
+IODVDServices::readDiscInfo ( IOMemoryDescriptor * 		buffer,
+							  UInt16 *					actualByteCount )
+{
+	
+	// Return errors for incoming activity if we have been terminated
+	if ( isInactive ( ) != false )
+	{
+		return kIOReturnNotAttached;
+	}
+	
+	fProvider->CheckPowerState ( );	
+	
+	return fProvider->ReadDiscInfo ( buffer, actualByteCount );
+	
+}
+
+
+//---------------------------------------------------------------------------
+// readTrackInfo
+
+IOReturn
+IODVDServices::readTrackInfo ( IOMemoryDescriptor *		buffer,
+							   UInt32					address,
+							   CDTrackInfoAddressType	addressType,
+							   UInt16 *					actualByteCount )
+{
+	
+	// Return errors for incoming activity if we have been terminated
+	if ( isInactive ( ) != false )
+	{
+		return kIOReturnNotAttached;
+	}
+	
+	fProvider->CheckPowerState ( );	
+	
+	return fProvider->ReadTrackInfo ( buffer, address, addressType, actualByteCount );
+	
+}
+
+
+//---------------------------------------------------------------------------
 // audioPause
 
 IOReturn
@@ -1450,12 +1551,13 @@ IODVDServices::handleIsOpen ( const IOService * client ) const
 	
 }
 
+
 // Space reserved for future expansion.
-OSMetaClassDefineReservedUnused( IODVDServices, 1 );
-OSMetaClassDefineReservedUnused( IODVDServices, 2 );
-OSMetaClassDefineReservedUnused( IODVDServices, 3 );
-OSMetaClassDefineReservedUnused( IODVDServices, 4 );
-OSMetaClassDefineReservedUnused( IODVDServices, 5 );
-OSMetaClassDefineReservedUnused( IODVDServices, 6 );
-OSMetaClassDefineReservedUnused( IODVDServices, 7 );
-OSMetaClassDefineReservedUnused( IODVDServices, 8 );
+OSMetaClassDefineReservedUnused ( IODVDServices, 1 );
+OSMetaClassDefineReservedUnused ( IODVDServices, 2 );
+OSMetaClassDefineReservedUnused ( IODVDServices, 3 );
+OSMetaClassDefineReservedUnused ( IODVDServices, 4 );
+OSMetaClassDefineReservedUnused ( IODVDServices, 5 );
+OSMetaClassDefineReservedUnused ( IODVDServices, 6 );
+OSMetaClassDefineReservedUnused ( IODVDServices, 7 );
+OSMetaClassDefineReservedUnused ( IODVDServices, 8 );

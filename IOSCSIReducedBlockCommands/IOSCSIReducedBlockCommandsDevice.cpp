@@ -45,7 +45,8 @@
 #define STATUS_LOG(x)
 #endif
 
-#define kMaxRetryCount 8
+#define kMaxRetryCount 						8
+#define kModeSenseWriteProtectBufferSize	17
 
 #define super IOSCSIPrimaryCommandsDevice
 OSDefineMetaClass ( IOSCSIReducedBlockCommandsDevice, IOSCSIPrimaryCommandsDevice );
@@ -69,6 +70,16 @@ IOSCSIReducedBlockCommandsDevice::InitializeDeviceSupport( void )
 	fMediaIsWriteProtected 	= true;
 	
     STATUS_LOG ( ( "IOSCSIReducedBlockCommandsDevice::InitializeDeviceSupport called\n" ) );
+	
+	fIOSCSIReducedBlockCommandsDeviceReserved = ( IOSCSIReducedBlockCommandsDeviceExpansionData * )
+			IOMalloc ( sizeof ( IOSCSIReducedBlockCommandsDeviceExpansionData ) );
+	
+	if ( fIOSCSIReducedBlockCommandsDeviceReserved == NULL )
+	{
+		goto ERROR_EXIT;
+	}
+	
+	bzero ( fIOSCSIReducedBlockCommandsDeviceReserved, sizeof ( IOSCSIReducedBlockCommandsDeviceExpansionData ) );
 	
 	// Make sure the drive is ready for us!
 	if ( ClearNotReadyStatus ( ) == false )
@@ -105,6 +116,14 @@ IOSCSIReducedBlockCommandsDevice::InitializeDeviceSupport( void )
 	
 ERROR_EXIT:
 	
+	
+	if ( fIOSCSIReducedBlockCommandsDeviceReserved != NULL )
+	{
+		
+		IOFree ( fIOSCSIReducedBlockCommandsDeviceReserved, sizeof ( IOSCSIReducedBlockCommandsDeviceExpansionData ) );
+		fIOSCSIReducedBlockCommandsDeviceReserved = NULL;
+		
+	}
 	
 	return setupSuccessful;
 	
@@ -170,6 +189,26 @@ IOSCSIReducedBlockCommandsDevice::TerminateDeviceSupport( void )
         fPollingThread = NULL;
         
     }
+	
+	// Release all memory/objects associated with the reserved fields.
+	if ( fPowerDownNotifier != NULL )
+	{
+		
+		// remove() will also call release() on this object (IONotifier).
+		// See IONotifier.h for more info.
+		fPowerDownNotifier->remove ( );
+		fPowerDownNotifier = NULL;
+		
+	}
+	
+	// Release the reserved structure.
+	if ( fIOSCSIReducedBlockCommandsDeviceReserved != NULL )
+	{
+		
+		IOFree ( fIOSCSIReducedBlockCommandsDeviceReserved, sizeof ( IOSCSIReducedBlockCommandsDeviceExpansionData ) );
+		fIOSCSIReducedBlockCommandsDeviceReserved = NULL;
+		
+	}
 
 }
 
@@ -458,7 +497,7 @@ IOSCSIReducedBlockCommandsDevice::DetermineDeviceCharacteristics ( void )
 						inquiryBufferCount) == true )
 		{
 			// The command was successfully built, now send it
-			serviceResponse = SendCommand( request, 0 );
+			serviceResponse = SendCommand ( request, 0 );
 		}
 		else
 		{
@@ -629,7 +668,7 @@ IOSCSIReducedBlockCommandsDevice::PollForMedia ( void )
 	if ( TEST_UNIT_READY ( request ) == true )
     {
     	// The command was successfully built, now send it
-    	serviceResponse = SendCommand( request, 0 );
+    	serviceResponse = SendCommand ( request, 0 );
 	}
 	else
 	{
@@ -639,7 +678,7 @@ IOSCSIReducedBlockCommandsDevice::PollForMedia ( void )
 	if ( serviceResponse == kSCSIServiceResponse_TASK_COMPLETE )
 	{
 		
-		if ( GetTaskStatus( request ) == kSCSITaskStatus_CHECK_CONDITION )
+		if ( GetTaskStatus ( request ) == kSCSITaskStatus_CHECK_CONDITION )
 		{
 			
 			validSense = GetAutoSenseData( request, &senseBuffer );
@@ -652,7 +691,7 @@ IOSCSIReducedBlockCommandsDevice::PollForMedia ( void )
 				if ( REQUEST_SENSE ( request, bufferDesc, kSenseDefaultSize ) == false )
 			    {
 			    	// The command was successfully built, now send it
-			    	serviceResponse = SendCommand( request, 0 );
+			    	serviceResponse = SendCommand ( request, 0 );
 				}
 				else
 				{
@@ -695,7 +734,7 @@ IOSCSIReducedBlockCommandsDevice::PollForMedia ( void )
 		if ( PREVENT_ALLOW_MEDIUM_REMOVAL ( request, 1 ) == true )
 	    {
 	    	// The command was successfully built, now send it
-	    	serviceResponse = SendCommand( request, 0 );
+	    	serviceResponse = SendCommand ( request, 0 );
 		}
 		else
 		{
@@ -711,14 +750,14 @@ IOSCSIReducedBlockCommandsDevice::PollForMedia ( void )
 	if ( READ_CAPACITY ( request, bufferDesc ) == true )
     {
     	// The command was successfully built, now send it
-    	serviceResponse = SendCommand( request, 0 );
+    	serviceResponse = SendCommand ( request, 0 );
 	}
 	else
 	{
 		PANIC_NOW(( "IOSCSIReducedBlockCommandsDevice::PollForMedia malformed command" ));
 	}
 	
-	taskStatus = GetTaskStatus( request );
+	taskStatus = GetTaskStatus ( request );
 	ReleaseSCSITask ( request );	
 	bufferDesc->release ( );
 	
@@ -744,9 +783,7 @@ IOSCSIReducedBlockCommandsDevice::PollForMedia ( void )
 	fMediaChanged	= true;
 	
 	// Message up the chain that we have media
-	messageClients ( kIOMessageMediaStateHasChanged,
-					 ( void * ) kIOMediaStateOnline,
-					 sizeof ( IOMediaState ) );
+	messageClients ( kIOMessageMediaStateHasChanged, ( void * ) kIOMediaStateOnline );
 	
 }
 
@@ -756,46 +793,50 @@ IOSCSIReducedBlockCommandsDevice::CheckWriteProtection ( void )
 {
 	
 	SCSIServiceResponse 	serviceResponse = kSCSIServiceResponse_SERVICE_DELIVERY_OR_TARGET_FAILURE;
-	UInt8					modeSenseBuffer[17];
+	UInt8					modeSenseBuffer[kModeSenseWriteProtectBufferSize];
 	IOMemoryDescriptor *	bufferDesc;
 	SCSITaskIdentifier		request;
-	SCSITaskStatus			taskStatus;
-
+	SCSICmdField1Bit		DBD;
+	
 	STATUS_LOG ( ( "IOSCSIReducedBlockCommandsDevice::checkWriteProtection called\n" ) );
 	
+	bzero ( modeSenseBuffer, kModeSenseWriteProtectBufferSize );
+	
 	bufferDesc = IOMemoryDescriptor::withAddress ( 	modeSenseBuffer,
-													17,
+													kModeSenseWriteProtectBufferSize,
 													kIODirectionIn );
 	
 	request = GetSCSITask ( );
+	
+	DBD = 1;	/* Disable block descriptors */
+	
+	
+LOOP:
+
 
 	if ( MODE_SENSE_6 ( request,
 						bufferDesc,
-						0x01,
-						0,
+						DBD,
+						0x00,
 						0x06,
-						17 ) == true )
+						kModeSenseWriteProtectBufferSize ) == true )
     {
     	// The command was successfully built, now send it
-    	serviceResponse = SendCommand( request, 0 );
+    	serviceResponse = SendCommand ( request, 0 );
 	}
 	else
 	{
-		PANIC_NOW(( "IOSCSIReducedBlockCommandsDevice::CheckWriteProtection malformed command" ));
+		PANIC_NOW ( ( "IOSCSIReducedBlockCommandsDevice::CheckWriteProtection malformed command" ) );
 	}
-
-	taskStatus = GetTaskStatus ( request );
-	ReleaseSCSITask ( request );
-	bufferDesc->release ( );
-
+	
 	if ( ( serviceResponse == kSCSIServiceResponse_TASK_COMPLETE ) &&
-		 ( taskStatus == kSCSITaskStatus_GOOD ) )
+		 ( GetTaskStatus ( request ) == kSCSITaskStatus_GOOD ) )
 	{
 		
 		STATUS_LOG ( ( "%s: Returned Mode sense data: ", getName ( ) ) );
 		
 		#if ( SCSI_RBC_DEVICE_DEBUGGING_LEVEL >=3 )
-			for ( UInt32 i = 0; i < 17; i++ )
+			for ( UInt32 i = 0; i < kModeSenseWriteProtectBufferSize; i++ )
 			{
 				STATUS_LOG ( ( "%x: ", modeSenseBuffer[i] ) );
 			}
@@ -814,20 +855,33 @@ IOSCSIReducedBlockCommandsDevice::CheckWriteProtection ( void )
 		{
 			
 			fMediaIsWriteProtected = false;
-		
+			
 		}
-	
+		
 	}
 	
 	else
 	{
 		
+		if ( DBD == 1 )
+		{
+			
+			// Retry with DBD=0
+			DBD = 0;
+			goto LOOP;
+			
+		}
+		
 		STATUS_LOG ( ( "%s: Mode Sense failed with service response = %x\n", getName ( ), serviceResponse ) );
 		
 		// The mode sense failed, mark as write protected to be safe.
 	 	fMediaIsWriteProtected = true;
-	
+		
 	}
+	
+	bufferDesc->release ( );
+	ReleaseSCSITask ( request );
+	
 }
 
 
@@ -905,7 +959,7 @@ IOSCSIReducedBlockCommandsDevice::IssueRead ( 	IOMemoryDescriptor *	buffer,
 					( SCSICmdField2Byte ) blockCount ) == true )
     {
     	// The command was successfully built, now send it
-    	serviceResponse = SendCommand( request, 0 );
+    	serviceResponse = SendCommand ( request, 0 );
 	}
 	else
 	{
@@ -988,7 +1042,7 @@ IOSCSIReducedBlockCommandsDevice::IssueWrite (	IOMemoryDescriptor *	buffer,
 						( SCSICmdField2Byte ) blockCount ) == true )
     {
     	// The command was successfully built, now send it
-    	serviceResponse = SendCommand( request, 0 );
+    	serviceResponse = SendCommand ( request, 0 );
 	}
 	else
 	{
@@ -1143,7 +1197,7 @@ IOSCSIReducedBlockCommandsDevice::EjectTheMedia ( void )
 		if ( SYNCHRONIZE_CACHE( request ) == true )
 	    {
 	    	// The command was successfully built, now send it
-	    	serviceResponse = SendCommand( request, 0 );
+	    	serviceResponse = SendCommand ( request, 0 );
 		}
 		else
 		{
@@ -1158,7 +1212,7 @@ IOSCSIReducedBlockCommandsDevice::EjectTheMedia ( void )
 	if ( PREVENT_ALLOW_MEDIUM_REMOVAL ( request, 0 ) == true )
     {
     	// The command was successfully built, now send it
-    	serviceResponse = SendCommand( request, 0 );
+    	serviceResponse = SendCommand ( request, 0 );
 	}
 	else
 	{
@@ -1168,7 +1222,7 @@ IOSCSIReducedBlockCommandsDevice::EjectTheMedia ( void )
 	if ( START_STOP_UNIT ( request, 0, 0, 1, 0 ) == true )
     {
     	// The command was successfully built, now send it
-    	serviceResponse = SendCommand( request, 0 );
+    	serviceResponse = SendCommand ( request, 0 );
 	}
 	else
 	{
@@ -1234,7 +1288,7 @@ IOSCSIReducedBlockCommandsDevice::SynchronizeCache ( void )
 	if ( SYNCHRONIZE_CACHE ( request ) == true )
     {
     	// The command was successfully built, now send it
-    	serviceResponse = SendCommand( request, 0 );
+    	serviceResponse = SendCommand ( request, 0 );
 	}
 	else
 	{
@@ -1907,8 +1961,10 @@ IOSCSIReducedBlockCommandsDevice::WRITE_BUFFER(
 								0x00 );
 }
 
+
+OSMetaClassDefineReservedUsed( IOSCSIReducedBlockCommandsDevice, 1 );	/* PowerDownHandler */
+
 // Space reserved for future expansion.
-OSMetaClassDefineReservedUnused( IOSCSIReducedBlockCommandsDevice, 1 );
 OSMetaClassDefineReservedUnused( IOSCSIReducedBlockCommandsDevice, 2 );
 OSMetaClassDefineReservedUnused( IOSCSIReducedBlockCommandsDevice, 3 );
 OSMetaClassDefineReservedUnused( IOSCSIReducedBlockCommandsDevice, 4 );

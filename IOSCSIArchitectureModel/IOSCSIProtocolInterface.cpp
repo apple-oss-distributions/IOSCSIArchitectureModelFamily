@@ -116,9 +116,10 @@ IOSCSIProtocolInterface::start ( IOService * provider )
 		return false;
 	}
 	
-	fPowerAckInProgress			= false;
-	fPowerTransitionInProgress 	= false;
-	fPowerManagementInitialized = false;
+	fPowerAckInProgress				= false;
+	fPowerTransitionInProgress 		= false;
+	fPowerManagementInitialized 	= false;
+	fUserClientExclusiveControlled	= false;
 	
 	// Allocate the thread on which to do power management
 	fPowerManagementThread = thread_call_allocate (
@@ -266,6 +267,7 @@ IOSCSIProtocolInterface::finalize ( IOOptionBits options )
 			{
 				IOSleep ( 1 );
 			}
+			
 			else
 			{
 				break;
@@ -420,12 +422,14 @@ IOSCSIProtocolInterface::sPowerManagement ( thread_call_param_t whichDevice )
 		self->release ( );
 		
 	}
+	
 	else
-        {
-            
-            self->fPowerTransitionInProgress = false;
-            
-        }
+	{
+		
+		self->fPowerTransitionInProgress = false;
+	    
+	}
+	
 }
 
 
